@@ -1,0 +1,11 @@
+[package]
+name = "kitti-format"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+supervisely-format = { version = "0.1.0", git = "https://github.com/NEWSLabNTU/supervisely-format.git", rev = "ebdad468df174c4146a173d1df4a868524b678f7" }
+serde_json = "1.0.79"
+nalgebra = "0.30.1"
