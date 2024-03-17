@@ -1,18 +1,11 @@
+mod gui;
 mod read_pcd;
 mod utils;
 
-use crate::utils::*;
+use crate::gui::Gui;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use kiss3d::{
-    camera::ArcBall,
-    event::{Action, Key, WindowEvent},
-    text::Font,
-    window::Window,
-};
-use kiss3d_utils::*;
-use nalgebra as na;
-use scarlet::colormap::ColorMap;
+use kiss3d::window::Window;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -48,144 +41,14 @@ fn visualize_in_pcd(
     supervisely_ann_dir: Option<PathBuf>,
     pcd_format: PcdFormat,
 ) -> Result<()> {
-    let ann_dir = kitti_dir.join("label_2");
-    let indices = get_indices_from_ann_dir(&ann_dir);
-    let mut idx = 0;
-    let mut index: Option<i32> = Some(indices[idx]);
-    let eye = na::Point3::from_slice(&[30.0f32, 0.0, 70.0]);
-    let at = na::Point3::from_slice(&[30.0f32, 0.0, 0.0]);
-    let mut camera = ArcBall::new(eye, at);
-    camera.set_up_axis(na::Vector3::from_column_slice(&[0., 0., 1.]));
-    let mut draw_in_intensity = false;
-    let color_map = scarlet::colormap::ListedColorMap::plasma();
-    println!("Reading objects...");
+    let mut window = Window::new_with_size("debug", 1920, 1080);
+    window.set_background_color(1., 1., 1.);
+    window.set_line_width(2.);
 
-    println!("Start Rendering...");
-    loop {
-        if index.is_none() {
-            eprint!("Enter the dataset index: ");
-            index = Some(text_io::read!());
-            idx = indices.iter().position(|&i| Some(i) == index).unwrap();
-        }
-        let mut frame_data = get_new_frame_data(
-            index.unwrap(),
-            &kitti_dir,
-            supervisely_ann_dir.as_deref(),
-            pcd_format,
-        )?;
-        let range_meta = {
-            let x_min = -30_f32;
-            let x_max = 40.4_f32;
-            let y_min = -40_f32;
-            let y_max = 40_f32;
-            (x_min, y_min, x_max, y_max)
-        };
-        let range_vertex = vec![
-            na::Point3::from([range_meta.0, range_meta.1, 1.]),
-            na::Point3::from([range_meta.0, range_meta.3, 1.]),
-            na::Point3::from([range_meta.2, range_meta.3, 1.]),
-            na::Point3::from([range_meta.2, range_meta.1, 1.]),
-        ];
+    let gui = Gui::new(kitti_dir, supervisely_ann_dir, pcd_format)?;
+    window.render_loop(gui);
 
-        // Draw in window
-        {
-            let mut window = Window::new_with_size("debug", 1920, 1080);
-            window.set_background_color(1., 1., 1.);
-            window.set_line_width(2.);
-
-            while window.render_with_camera(&mut camera) {
-                // info_points.iter().for_each(|point| {
-                //     let color = na::Point3::from([0.0, 0.0, 0.0]);
-                //     window.draw_point(&point.point, &color)
-                // });
-                window.draw_text(
-                    &format!("frameID: {:?}", index.unwrap()),
-                    &na::Point2::from([0., 0.]),
-                    50.0,
-                    &Font::default(),
-                    &na::Point3::from([0., 0., 0.]),
-                );
-
-                for i in 0..4 {
-                    window.draw_line(
-                        &range_vertex[i],
-                        &range_vertex[(i + 1) % 4],
-                        &na::Point3::from([0., 0., 0.]),
-                    );
-                }
-
-                window.draw_axes(na::Point3::origin(), 5.0);
-                frame_data.points_in_range.iter().for_each(|point| {
-                    let color = if draw_in_intensity {
-                        let color: scarlet::color::RGBColor =
-                            color_map.transform_single((point.intensity / 255. * 10.) as f64);
-                        na::Point3::from([color.r, color.g, color.b]).cast()
-                    } else {
-                        na::Point3::from([0.0, 0.0, 1.0])
-                    };
-                    window.draw_point(&point.point, &color)
-                });
-                // if draw_filtered_points {
-                frame_data.points_out_range.iter().for_each(|point| {
-                    let color = if draw_in_intensity {
-                        let color: scarlet::color::RGBColor =
-                            color_map.transform_single((point.intensity / 255. * 10.) as f64);
-                        na::Point3::from([color.r, color.g, color.b]).cast()
-                    } else {
-                        na::Point3::from([0.0, 0.0, 1.0])
-                    };
-                    window.draw_point(&point.point, &color)
-                });
-                // }
-                draw_objects_in_pcd(
-                    &frame_data.objects,
-                    &frame_data.num_points_map,
-                    &mut window,
-                    &camera,
-                );
-                window.events().iter().try_for_each(|event| -> Result<_> {
-                    use Action as A;
-                    use Key as K;
-                    use WindowEvent as E;
-
-                    match event.value {
-                        E::Key(K::I, A::Press, _) => {
-                            draw_in_intensity = !draw_in_intensity;
-                        }
-                        E::Key(K::Left, A::Press, _) => {
-                            idx = (idx - 1).rem_euclid(indices.len());
-                            index = Some(indices[idx]);
-
-                            frame_data = get_new_frame_data(
-                                index.unwrap(),
-                                &kitti_dir,
-                                supervisely_ann_dir.as_deref(),
-                                pcd_format,
-                            )?;
-                        }
-                        E::Key(K::Right, A::Press, _) => {
-                            idx = (idx + 1).rem_euclid(indices.len());
-                            index = Some(indices[idx]);
-                            frame_data = get_new_frame_data(
-                                index.unwrap(),
-                                &kitti_dir,
-                                supervisely_ann_dir.as_deref(),
-                                pcd_format,
-                            )?;
-                        }
-                        E::Key(K::Escape, A::Press, _) => {
-                            index = None;
-                            window.close();
-                        }
-
-                        _ => {}
-                    }
-
-                    Ok(())
-                })?;
-            }
-        }
-    }
+    Ok(())
 }
 
 // fn visualize_in_image(kitti_dir: PathBuf) {
