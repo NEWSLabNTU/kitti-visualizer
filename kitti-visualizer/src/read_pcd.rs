@@ -1,9 +1,9 @@
-use anyhow::Result;
-use itertools::Itertools;
+use anyhow::{Context, Result};
+use byteorder::{LittleEndian, ReadBytesExt};
 use nalgebra as na;
 use std::{
     fs::File,
-    io::{prelude::*, BufReader},
+    io::{self, prelude::*, BufReader},
     path::Path,
 };
 
@@ -16,29 +16,50 @@ pub struct InfoPoint {
 }
 
 pub fn load_bin(pcd_path: &Path) -> Result<Vec<InfoPoint>> {
-    let mut input = BufReader::new(File::open(pcd_path).expect("Failed to open file"));
-    let mut floats: Vec<f32> = vec![];
-    loop {
-        use std::io::ErrorKind;
-        let mut buffer = [0u8; std::mem::size_of::<f32>()];
-        let res = input.read_exact(&mut buffer);
-        match res {
-            Err(error) if error.kind() == ErrorKind::UnexpectedEof => break,
-            _ => {}
-        }
-        res.expect("Unexpected error during read");
-        let f = f32::from_le_bytes(buffer);
-        floats.push(f);
-    }
-    let mut points: Vec<InfoPoint> = vec![];
+    let mut input = BufReader::new(
+        File::open(pcd_path)
+            .with_context(|| format!("Failed to open file {}", pcd_path.display()))?,
+    );
 
-    for (x, y, z, intensity) in floats.iter().tuples() {
-        points.push(InfoPoint {
-            point: na::Point3::from([*x, *y, *z]),
-            intensity: intensity.clone(),
+    macro_rules! read_f32 {
+        () => {{
+            input.read_f32::<LittleEndian>()
+        }};
+    }
+
+    macro_rules! try_read_f32 {
+        () => {{
+            let mut buf = [0u8; 4];
+            let cnt = input.read(&mut buf)?;
+
+            match cnt {
+                4 => Ok(Some(f32::from_le_bytes(buf))),
+                0 => Ok(None),
+                cnt => Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!("Truncated f32 found. Expect 4 bytes, but read {cnt} bytes."),
+                )),
+            }
+        }};
+    }
+
+    let mut points = vec![];
+
+    loop {
+        let Some(x) = try_read_f32!()? else {
+            break;
+        };
+        let y = read_f32!()?;
+        let z = read_f32!()?;
+        let intensity = read_f32!()?;
+
+        let point = InfoPoint {
+            point: [x, y, z].into(),
+            intensity,
             device_id: None,
             active: None,
-        });
+        };
+        points.push(point);
     }
 
     Ok(points)

@@ -1,12 +1,19 @@
-use kiss3d::window::Window;
-use kitti_format::{KittiCalib, KittiObject};
-use nalgebra as na;
-use std::{fs, io, path::Path};
-
 use crate::{
     read_pcd::{load_bin, InfoPoint},
     PcdFormat,
 };
+use anyhow::{Context, Result};
+use kiss3d::{camera::Camera, text::Font, window::Window};
+use kitti_format::{KittiCalib, KittiObject};
+use nalgebra as na;
+use std::{fs, io, path::Path, rc::Rc};
+
+pub struct FrameData {
+    pub objects: Vec<KittiObject>,
+    pub points_in_range: Vec<InfoPoint>,
+    pub points_out_range: Vec<InfoPoint>,
+    pub num_points_map: Vec<usize>,
+}
 
 // pub fn put_text(image: &mut Mat, text: &str, org: cv_core::Point) {
 //     imgproc::put_text(
@@ -159,10 +166,10 @@ pub fn get_indices_from_ann_dir(ann_dir: &Path) -> Vec<i32> {
 // }
 
 pub fn draw_objects_in_pcd(
-    objects: &Vec<KittiObject>,
+    objects: &[KittiObject],
     num_points_map: &[usize],
     window: &mut Window,
-    camera: &dyn kiss3d::camera::Camera,
+    camera: &dyn Camera,
 ) {
     let edge_relation = vec![
         (0, 1),
@@ -224,13 +231,13 @@ pub fn draw_objects_in_pcd(
             &text,
             &na::Point3::cast(obj.bbox3d.pose.translation.vector.into()),
             50.0,
-            &kiss3d::text::Font::default(),
+            &Font::default(),
             &color,
         );
     }
 }
 
-pub fn in_bbox(point: &na::Point3<f64>, objects: &Vec<KittiObject>) -> bool {
+pub fn in_bbox(point: &na::Point3<f64>, objects: &[KittiObject]) -> bool {
     let mut result = false;
     for obj in objects {
         let bbox = &obj.bbox3d;
@@ -253,11 +260,11 @@ pub fn in_bbox(point: &na::Point3<f64>, objects: &Vec<KittiObject>) -> bool {
 
 fn draw_text_3d(
     window: &mut Window,
-    camera: &dyn kiss3d::camera::Camera,
+    camera: &dyn Camera,
     text: &str,
     pos: &na::Point3<f32>,
     scale: f32,
-    font: &std::rc::Rc<kiss3d::text::Font>,
+    font: &Rc<Font>,
     color: &na::Point3<f32>,
 ) {
     let window_size = na::Vector2::from([window.size()[0] as f32, window.size()[1] as f32]);
@@ -291,13 +298,12 @@ pub fn get_objects_from_frame_id(
         let calib_path = calib_dir.join(format!("{:0>6}.txt", index.to_string()));
 
         let calib = KittiCalib::from_file(calib_path);
-        let objects;
+
         if pcd_format == PcdFormat::Philly {
-            objects = kitti_format::read_ann_file_philly(ann_path, &calib, &exclude_classes);
+            kitti_format::read_ann_file_philly(ann_path, &calib, &exclude_classes)
         } else {
-            objects = kitti_format::read_ann_file(ann_path, &calib, &exclude_classes);
+            kitti_format::read_ann_file(ann_path, &calib, &exclude_classes)
         }
-        objects
     } else {
         let ann_path = supervisely_ann_dir
             .as_ref()
@@ -314,13 +320,14 @@ pub fn get_new_frame_data(
     kitti_dir: &Path,
     supervisely_ann_dir: Option<&Path>,
     pcd_format: PcdFormat,
-) -> (Vec<KittiObject>, Vec<InfoPoint>, Vec<InfoPoint>, Vec<usize>) {
+) -> Result<FrameData> {
     let pcd_dir = kitti_dir.join("velodyne");
-    let objects = get_objects_from_frame_id(index, &kitti_dir, supervisely_ann_dir, pcd_format);
+    let objects = get_objects_from_frame_id(index, kitti_dir, supervisely_ann_dir, pcd_format);
     // let objects = index_to_objects.get(&index.unwrap()).unwrap();
     // Get the pcd file
     let pcd_path = pcd_dir.join(format!("{:0>6}.bin", index.to_string()));
-    let info_points = load_bin(&pcd_path).unwrap();
+    let info_points =
+        load_bin(&pcd_path).with_context(|| format!("unable to read {}", pcd_path.display()))?;
     let points_in_range: Vec<_> = info_points
         .iter()
         .filter(|p| {
@@ -349,12 +356,18 @@ pub fn get_new_frame_data(
                 .filter(|p| {
                     in_bbox(
                         &na::Point3::from([p.point.x, p.point.y, p.point.z]).cast(),
-                        &vec![obj.clone()],
+                        &[obj.clone()],
                     )
                 })
                 .count();
             num_points
         })
         .collect();
-    (objects, points_in_range, points_out_range, num_points_map)
+
+    Ok(FrameData {
+        objects,
+        points_in_range,
+        points_out_range,
+        num_points_map,
+    })
 }

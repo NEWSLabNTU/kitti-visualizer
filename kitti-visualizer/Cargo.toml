@@ -11,7 +11,7 @@ text_io = "0.1.10"
 nalgebra = "0.30.1"
 # protobuf-types = { path = "../../rust-lib/protobuf-types", features = ["with-nalgebra"] }
 kiss3d = "0.35.0"
-anyhow = "1.0.57"
+anyhow = { version = "1.0.57", features = ["backtrace"] }
 pcd-rs = { version = "0.9.1", features = ["derive"] }
 num-traits = "0.2.14"
 kiss3d-utils = { version = "0.1.0", git = "https://github.com/NEWSLabNTU/kiss3d-utils.git", rev = "77870db16c7570499f2de47f781586af0ed199de" }
@@ -20,3 +20,5 @@ kitti-format = { path = "../kitti-format" }
 # kitti-dataset = { version = "0.2.0", git = "https://github.com/jerry73204/kitti-dataset-for-rust.git", rev = "74ffdc6f7c1befda3fb82876f0ecdd974e02aaff" }
 scarlet = "1.1.0"
 clap = { version = "4.5.2", features = ["derive"] }
+rayon = "1.9.0"
+byteorder = "1.5.0"

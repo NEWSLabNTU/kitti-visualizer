@@ -2,10 +2,12 @@ mod read_pcd;
 mod utils;
 
 use crate::utils::*;
+use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use kiss3d::{
     camera::ArcBall,
     event::{Action, Key, WindowEvent},
+    text::Font,
     window::Window,
 };
 use kiss3d_utils::*;
@@ -29,21 +31,23 @@ pub enum PcdFormat {
     Philly,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let Opts {
         kitti_dir,
         supervisely_ann_dir,
         format,
     } = Opts::parse();
 
-    visualize_in_pcd(kitti_dir, supervisely_ann_dir, format);
+    visualize_in_pcd(kitti_dir, supervisely_ann_dir, format)?;
+
+    Ok(())
 }
 
 fn visualize_in_pcd(
     kitti_dir: PathBuf,
     supervisely_ann_dir: Option<PathBuf>,
     pcd_format: PcdFormat,
-) {
+) -> Result<()> {
     let ann_dir = kitti_dir.join("label_2");
     let indices = get_indices_from_ann_dir(&ann_dir);
     let mut idx = 0;
@@ -63,18 +67,17 @@ fn visualize_in_pcd(
             index = Some(text_io::read!());
             idx = indices.iter().position(|&i| Some(i) == index).unwrap();
         }
-        let (mut objects, mut points_in_range, mut points_out_range, mut num_points_map) =
-            get_new_frame_data(
-                index.unwrap(),
-                &kitti_dir,
-                supervisely_ann_dir.as_deref(),
-                pcd_format,
-            );
+        let mut frame_data = get_new_frame_data(
+            index.unwrap(),
+            &kitti_dir,
+            supervisely_ann_dir.as_deref(),
+            pcd_format,
+        )?;
         let range_meta = {
-            let x_min = -30 as f32;
-            let x_max = 40.4 as f32;
-            let y_min = -40 as f32;
-            let y_max = 40 as f32;
+            let x_min = -30_f32;
+            let x_max = 40.4_f32;
+            let y_min = -40_f32;
+            let y_max = 40_f32;
             (x_min, y_min, x_max, y_max)
         };
         let range_vertex = vec![
@@ -99,7 +102,7 @@ fn visualize_in_pcd(
                     &format!("frameID: {:?}", index.unwrap()),
                     &na::Point2::from([0., 0.]),
                     50.0,
-                    &kiss3d::text::Font::default(),
+                    &Font::default(),
                     &na::Point3::from([0., 0., 0.]),
                 );
 
@@ -112,7 +115,7 @@ fn visualize_in_pcd(
                 }
 
                 window.draw_axes(na::Point3::origin(), 5.0);
-                points_in_range.iter().for_each(|point| {
+                frame_data.points_in_range.iter().for_each(|point| {
                     let color = if draw_in_intensity {
                         let color: scarlet::color::RGBColor =
                             color_map.transform_single((point.intensity / 255. * 10.) as f64);
@@ -123,20 +126,24 @@ fn visualize_in_pcd(
                     window.draw_point(&point.point, &color)
                 });
                 // if draw_filtered_points {
-                points_out_range.iter().for_each(|point| {
+                frame_data.points_out_range.iter().for_each(|point| {
                     let color = if draw_in_intensity {
                         let color: scarlet::color::RGBColor =
                             color_map.transform_single((point.intensity / 255. * 10.) as f64);
-                        let color = na::Point3::from([color.r, color.g, color.b]).cast();
-                        color
+                        na::Point3::from([color.r, color.g, color.b]).cast()
                     } else {
                         na::Point3::from([0.0, 0.0, 1.0])
                     };
                     window.draw_point(&point.point, &color)
                 });
                 // }
-                draw_objects_in_pcd(&objects, &num_points_map, &mut window, &camera);
-                window.events().iter().for_each(|event| {
+                draw_objects_in_pcd(
+                    &frame_data.objects,
+                    &frame_data.num_points_map,
+                    &mut window,
+                    &camera,
+                );
+                window.events().iter().try_for_each(|event| -> Result<_> {
                     use Action as A;
                     use Key as K;
                     use WindowEvent as E;
@@ -149,32 +156,22 @@ fn visualize_in_pcd(
                             idx = (idx - 1).rem_euclid(indices.len());
                             index = Some(indices[idx]);
 
-                            let new_frame_data = get_new_frame_data(
+                            frame_data = get_new_frame_data(
                                 index.unwrap(),
                                 &kitti_dir,
                                 supervisely_ann_dir.as_deref(),
                                 pcd_format,
-                            );
-
-                            objects = new_frame_data.0;
-                            points_in_range = new_frame_data.1;
-                            points_out_range = new_frame_data.2;
-                            num_points_map = new_frame_data.3;
+                            )?;
                         }
                         E::Key(K::Right, A::Press, _) => {
                             idx = (idx + 1).rem_euclid(indices.len());
                             index = Some(indices[idx]);
-                            let new_frame_data = get_new_frame_data(
+                            frame_data = get_new_frame_data(
                                 index.unwrap(),
                                 &kitti_dir,
                                 supervisely_ann_dir.as_deref(),
                                 pcd_format,
-                            );
-
-                            objects = new_frame_data.0;
-                            points_in_range = new_frame_data.1;
-                            points_out_range = new_frame_data.2;
-                            num_points_map = new_frame_data.3;
+                            )?;
                         }
                         E::Key(K::Escape, A::Press, _) => {
                             index = None;
@@ -183,7 +180,9 @@ fn visualize_in_pcd(
 
                         _ => {}
                     }
-                });
+
+                    Ok(())
+                })?;
             }
         }
     }
