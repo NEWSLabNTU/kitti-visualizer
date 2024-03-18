@@ -20,7 +20,13 @@ use scarlet::{
     color::RGBColor,
     colormap::{ColorMap, ListedColorMap},
 };
-use std::{path::PathBuf, rc::Rc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    rc::Rc,
+    time::{Duration, Instant},
+};
+use uluru::LRUCache;
 
 const RANGE_META: [f32; 4] = [-30.0, 40.0, 40.4, 40.0];
 static RANGE_VERTEX: Lazy<[na::Point3<f32>; 4]> = Lazy::new(|| {
@@ -31,6 +37,7 @@ static RANGE_VERTEX: Lazy<[na::Point3<f32>; 4]> = Lazy::new(|| {
         na::Point3::from([RANGE_META[2], RANGE_META[1], 1.]),
     ]
 });
+const FRAME_PERIOD: Duration = Duration::from_millis(100);
 
 pub struct Gui {
     camera: ArcBall,
@@ -39,18 +46,23 @@ pub struct Gui {
     data: GuiData,
 }
 
+type FrameIndex = usize;
+type AnnotationIndex = usize;
+
 struct GuiOptions {
     draw_in_intensity: bool,
+    play: bool,
 }
 
 struct GuiCache {
-    idx: usize,
-    index: usize,
-    frame_data: Option<FrameData>,
+    frame_idx: FrameIndex,
+    frame_cache: HashMap<FrameIndex, FrameData>,
+    lru: LRUCache<FrameIndex, 32>,
+    next_tick: Option<Instant>,
 }
 
 struct GuiData {
-    indices: Vec<usize>,
+    indices: Vec<AnnotationIndex>,
     color_map: ListedColorMap,
     kitti_dir: PathBuf,
     supervisely_ann_dir: Option<PathBuf>,
@@ -65,7 +77,8 @@ impl Gui {
     ) -> Result<Self> {
         let ann_dir = kitti_dir.join("label_2");
         let indices = get_indices_from_ann_dir(&ann_dir);
-        let Some(&index) = indices.get(0) else {
+
+        let Some(&ann_idx) = indices.first() else {
             bail!(
                 "Unable to load annotation data from {}. Is it empty?",
                 ann_dir.display()
@@ -73,7 +86,7 @@ impl Gui {
         };
 
         let frame_data = get_new_frame_data(
-            index as i32,
+            ann_idx as i32,
             &kitti_dir,
             supervisely_ann_dir.as_deref(),
             pcd_format,
@@ -82,7 +95,7 @@ impl Gui {
         let frame_data = match frame_data {
             Ok(frame) => Some(frame),
             Err(err) => {
-                eprintln!("fail to load frame {index}: {err}");
+                eprintln!("fail to load frame {ann_idx}: {err}");
                 None
             }
         };
@@ -95,14 +108,26 @@ impl Gui {
             camera
         };
 
+        let frame_idx = 0;
+
+        let mut lru = LRUCache::default();
+        if frame_data.is_some() {
+            lru.insert(frame_idx);
+        }
+
         Ok(Self {
             cache: GuiCache {
-                idx: 0,
-                index,
-                frame_data,
+                frame_idx,
+                frame_cache: match frame_data {
+                    Some(frame_data) => [(frame_idx, frame_data)].into_iter().collect(),
+                    None => HashMap::new(),
+                },
+                lru,
+                next_tick: None,
             },
             options: GuiOptions {
                 draw_in_intensity: false,
+                play: false,
             },
             data: GuiData {
                 indices,
@@ -117,16 +142,18 @@ impl Gui {
 
     fn render(&self, window: &mut Window) {
         let Self {
-            cache: GuiCache { index, .. },
+            cache: GuiCache { frame_idx, .. },
+            data: GuiData { ref indices, .. },
             ..
         } = *self;
+        let ann_idx = indices[frame_idx];
 
         // info_points.iter().for_each(|point| {
         //     let color = na::Point3::from([0.0, 0.0, 0.0]);
         //     window.draw_point(&point.point, &color)
         // });
         window.draw_text(
-            &format!("frameID: {:?}", index),
+            &format!("frameID: {:?}", ann_idx),
             &na::Point2::from([0., 0.]),
             50.0,
             &Font::default(),
@@ -150,12 +177,17 @@ impl Gui {
             options: GuiOptions {
                 draw_in_intensity, ..
             },
-            cache: GuiCache { ref frame_data, .. },
+            cache:
+                GuiCache {
+                    frame_idx,
+                    ref frame_cache,
+                    ..
+                },
             data: GuiData { ref color_map, .. },
             ..
         } = *self;
 
-        let Some(frame_data) = frame_data else {
+        let Some(frame_data) = frame_cache.get(&frame_idx) else {
             return;
         };
 
@@ -225,7 +257,7 @@ impl Gui {
         //     let velo_to_cam = na::Isometry3::from_parts(velo_to_cam_trans, velo_to_cam_rot);
         //     velo_to_cam.inverse() * rect_to_cam
         // };
-        for (_idx, obj) in objects.iter().enumerate() {
+        for obj in objects {
             let vertices = obj.bbox3d.vertices();
             edge_relation.iter().for_each(|(from_idx, to_idx)| {
                 let color = na::Point3::from([0., 1., 0.]);
@@ -281,26 +313,25 @@ impl Gui {
 
     fn process_events(&mut self, window: &mut Window) {
         let Self {
-            options: GuiOptions {
-                draw_in_intensity, ..
-            },
+            options:
+                GuiOptions {
+                    draw_in_intensity,
+                    play,
+                    ..
+                },
             cache:
                 GuiCache {
-                    idx,
-                    index,
-                    frame_data,
+                    frame_idx,
+                    next_tick,
                     ..
                 },
             data,
             ..
         } = self;
-        let GuiData {
-            ref indices,
-            ref kitti_dir,
-            ref supervisely_ann_dir,
-            pcd_format,
-            ..
-        } = *data;
+        let GuiData { ref indices, .. } = *data;
+
+        let orig_frame_idx = *frame_idx;
+        let mut new_frame_idx = *frame_idx;
 
         window.events().iter().for_each(|event| {
             use Action as A;
@@ -311,37 +342,90 @@ impl Gui {
                 E::Key(K::I, A::Press, _) => {
                     *draw_in_intensity = !*draw_in_intensity;
                 }
+                E::Key(K::Space, A::Press, _) => {
+                    *play = !*play;
+                }
                 E::Key(K::Left, A::Press, _) => {
-                    *idx = (*idx - 1).rem_euclid(indices.len());
-                    *index = indices[*idx];
+                    new_frame_idx = (new_frame_idx - 1).rem_euclid(indices.len());
                 }
                 E::Key(K::Right, A::Press, _) => {
-                    *idx = (*idx + 1).rem_euclid(indices.len());
-                    *index = indices[*idx];
+                    new_frame_idx = (new_frame_idx + 1).rem_euclid(indices.len());
                 }
                 E::Key(K::Escape, A::Press, _) => {
                     window.close();
                 }
                 _ => {}
             }
+        });
 
+        if orig_frame_idx != new_frame_idx {
+            *play = false;
+        }
+
+        if *play {
+            let now = Instant::now();
+
+            match next_tick {
+                Some(next_tick) => {
+                    if now >= *next_tick {
+                        while now >= *next_tick {
+                            *next_tick += FRAME_PERIOD;
+                        }
+                        new_frame_idx += 1;
+                    }
+                }
+                None => {
+                    *next_tick = Some(now + FRAME_PERIOD);
+                }
+            }
+        }
+
+        *frame_idx = new_frame_idx;
+        self.load_frame_data(new_frame_idx);
+    }
+
+    fn load_frame_data(&mut self, frame_idx: usize) {
+        use std::collections::hash_map::Entry;
+        let Self {
+            cache:
+                GuiCache {
+                    ref mut frame_cache,
+                    ref mut lru,
+                    ..
+                },
+            data:
+                GuiData {
+                    ref indices,
+                    ref kitti_dir,
+                    ref supervisely_ann_dir,
+                    pcd_format,
+                    ..
+                },
+            ..
+        } = *self;
+        let ann_idx = indices[frame_idx];
+
+        if let Entry::Vacant(entry) = frame_cache.entry(ann_idx) {
             let result = get_new_frame_data(
-                *index as i32,
-                &kitti_dir,
+                ann_idx as i32,
+                kitti_dir,
                 supervisely_ann_dir.as_deref(),
                 pcd_format,
             );
 
             match result {
-                Ok(new_frame_data) => {
-                    *frame_data = Some(new_frame_data);
+                Ok(frame_data) => {
+                    entry.insert(frame_data);
+
+                    if let Some(frame_idx_to_rm) = lru.insert(frame_idx) {
+                        frame_cache.remove(&frame_idx_to_rm);
+                    }
                 }
                 Err(err) => {
-                    *frame_data = None;
-                    eprintln!("fail to load frame {}: {err}", *index);
+                    eprintln!("fail to load frame {}: {err}", ann_idx);
                 }
-            }
-        });
+            };
+        }
     }
 }
 
