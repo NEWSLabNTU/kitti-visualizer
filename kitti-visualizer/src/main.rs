@@ -6,7 +6,7 @@ use crate::gui::Gui;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use kiss3d::window::Window;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 #[derive(Parser)]
 struct Opts {
@@ -14,8 +14,14 @@ struct Opts {
     pub kitti_dir: PathBuf,
     #[clap(short, long)]
     pub supervisely_ann_dir: Option<PathBuf>,
+    #[clap(short, long)]
+    pub screencast_dir: Option<PathBuf>,
     #[clap(short, long, default_value = "libpcl")]
     pub format: PcdFormat,
+    #[clap(long)]
+    pub play_on_start: bool,
+    #[clap(long)]
+    pub record_on_start: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
@@ -29,23 +35,27 @@ fn main() -> Result<()> {
         kitti_dir,
         supervisely_ann_dir,
         format,
+        play_on_start,
+        record_on_start,
+        screencast_dir,
     } = Opts::parse();
 
-    visualize_in_pcd(kitti_dir, supervisely_ann_dir, format)?;
+    if let Some(screencast_dir) = &screencast_dir {
+        fs::create_dir_all(screencast_dir)?;
+    }
 
-    Ok(())
-}
-
-fn visualize_in_pcd(
-    kitti_dir: PathBuf,
-    supervisely_ann_dir: Option<PathBuf>,
-    pcd_format: PcdFormat,
-) -> Result<()> {
     let mut window = Window::new_with_size("debug", 1920, 1080);
     window.set_background_color(1., 1., 1.);
     window.set_line_width(2.);
 
-    let gui = Gui::new(kitti_dir, supervisely_ann_dir, pcd_format)?;
+    let gui = Gui::new(
+        kitti_dir,
+        supervisely_ann_dir,
+        screencast_dir,
+        format,
+        play_on_start,
+        record_on_start,
+    )?;
     window.render_loop(gui);
 
     Ok(())

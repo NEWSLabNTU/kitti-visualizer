@@ -52,6 +52,7 @@ type AnnotationIndex = usize;
 struct GuiOptions {
     draw_in_intensity: bool,
     play: bool,
+    record: bool,
 }
 
 struct GuiCache {
@@ -66,6 +67,7 @@ struct GuiData {
     color_map: ListedColorMap,
     kitti_dir: PathBuf,
     supervisely_ann_dir: Option<PathBuf>,
+    screencast_dir: Option<PathBuf>,
     pcd_format: PcdFormat,
 }
 
@@ -73,7 +75,10 @@ impl Gui {
     pub fn new(
         kitti_dir: PathBuf,
         supervisely_ann_dir: Option<PathBuf>,
+        screencast_dir: Option<PathBuf>,
         pcd_format: PcdFormat,
+        play_on_start: bool,
+        record_on_start: bool,
     ) -> Result<Self> {
         let ann_dir = kitti_dir.join("label_2");
         let indices = get_indices_from_ann_dir(&ann_dir);
@@ -101,8 +106,8 @@ impl Gui {
         };
 
         let camera = {
-            let eye = na::Point3::from_slice(&[30.0f32, 0.0, 70.0]);
-            let at = na::Point3::from_slice(&[30.0f32, 0.0, 0.0]);
+            let eye = na::Point3::from_slice(&[-20.0f32, -20.0, 20.0]);
+            let at = na::Point3::from_slice(&[0.0f32, 0.0, 0.0]);
             let mut camera = ArcBall::new(eye, at);
             camera.set_up_axis(na::Vector3::from_column_slice(&[0., 0., 1.]));
             camera
@@ -127,13 +132,15 @@ impl Gui {
             },
             options: GuiOptions {
                 draw_in_intensity: false,
-                play: false,
+                play: play_on_start,
+                record: record_on_start,
             },
             data: GuiData {
                 indices,
                 color_map: ListedColorMap::plasma(),
                 kitti_dir,
                 supervisely_ann_dir,
+                screencast_dir,
                 pcd_format,
             },
             camera,
@@ -317,6 +324,7 @@ impl Gui {
                 GuiOptions {
                     draw_in_intensity,
                     play,
+                    record,
                     ..
                 },
             cache:
@@ -339,6 +347,9 @@ impl Gui {
             use WindowEvent as E;
 
             match event.value {
+                E::Key(K::R, A::Press, _) => {
+                    *record = !*record;
+                }
                 E::Key(K::I, A::Press, _) => {
                     *draw_in_intensity = !*draw_in_intensity;
                 }
@@ -433,6 +444,14 @@ impl State for Gui {
     fn step(&mut self, window: &mut Window) {
         self.process_events(window);
         self.render(window);
+
+        if let (true, Some(screencast_dir)) = (self.options.record, &self.data.screencast_dir) {
+            let screenshot = window.snap_image();
+            let image_path = screencast_dir.join(format!("{:06}.jpg", self.cache.frame_idx));
+            if let Err(err) = screenshot.save(&image_path) {
+                eprintln!("unable to save {}: {err}", image_path.display());
+            }
+        }
     }
 
     fn cameras_and_effect_and_renderer(
