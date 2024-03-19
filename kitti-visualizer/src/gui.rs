@@ -382,7 +382,12 @@ impl Gui {
                         while now >= *next_tick {
                             *next_tick += FRAME_PERIOD;
                         }
-                        new_frame_idx += 1;
+
+                        if new_frame_idx + 1 < indices.len() {
+                            new_frame_idx += 1;
+                        } else {
+                            *play = false;
+                        }
                     }
                 }
                 None => {
