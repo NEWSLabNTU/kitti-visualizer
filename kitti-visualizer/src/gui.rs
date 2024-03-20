@@ -52,7 +52,8 @@ type FrameIndex = usize;
 type AnnotationIndex = usize;
 
 struct GuiOptions {
-    draw_in_intensity: bool,
+    mark_points_in_boxes: bool,
+    show_bbox: bool,
     play: bool,
     record: bool,
 }
@@ -157,7 +158,8 @@ impl Gui {
                 next_tick: None,
             },
             options: GuiOptions {
-                draw_in_intensity: false,
+                mark_points_in_boxes: false,
+                show_bbox: true,
                 play: play_on_start,
                 record,
             },
@@ -229,8 +231,10 @@ impl Gui {
             window.draw_point(pos, color)
         }
 
-        for bbox in bboxes {
-            self.draw_bbox(bbox, window);
+        if self.options.show_bbox {
+            for bbox in bboxes {
+                self.draw_bbox(bbox, window);
+            }
         }
     }
 
@@ -280,7 +284,8 @@ impl Gui {
         let Self {
             options:
                 GuiOptions {
-                    draw_in_intensity,
+                    mark_points_in_boxes,
+                    show_bbox,
                     play,
                     record,
                     ..
@@ -320,10 +325,13 @@ impl Gui {
                     *record = !*record;
                 }
                 E::Key(K::I, A::Press, _) => {
-                    *draw_in_intensity = !*draw_in_intensity;
+                    *mark_points_in_boxes = !*mark_points_in_boxes;
                 }
                 E::Key(K::Space, A::Press, _) => {
                     *play = !*play;
+                }
+                E::Key(K::B, A::Press, _) => {
+                    *show_bbox = !*show_bbox;
                 }
                 E::Key(K::Left, A::Press, _) => {
                     new_frame_idx = (new_frame_idx - 1).rem_euclid(indices.len());
@@ -391,9 +399,11 @@ impl Gui {
                     pcd_format,
                     ..
                 },
-            options: GuiOptions {
-                draw_in_intensity, ..
-            },
+            options:
+                GuiOptions {
+                    mark_points_in_boxes: draw_in_intensity,
+                    ..
+                },
             ..
         } = *self;
         let ann_idx = indices[frame_idx];
